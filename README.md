@@ -89,7 +89,7 @@ print(f"Result at alpha: {result}")  # 输出: beta 值
   - 触发点 \( α \) 的共享值通过调整确保合并后返回 \( β \)。
 - 使用 XOR 操作修改 `share0[alpha]`：
   \[
-  $\text${share0[alpha]} = β ⊕ $\text${share1[alpha]}
+  {share0[alpha]} = β ⊕ {share1[alpha]}
   \]
 
 ### 4. `dpf_eval` 函数
