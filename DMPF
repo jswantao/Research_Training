@@ -1,0 +1,112 @@
+import os
+import random
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+
+# PRF 实现：使用 AES 作为伪随机函数
+def prf(key, input_bytes):
+    """
+    使用 AES 作为 PRF（伪随机函数），该函数生成一个伪随机字节流。
+
+    :param key: 16 字节的密钥
+    :param input_bytes: 输入数据（字节串）
+    :return: 8 字节的伪随机字节
+    """
+    cipher = Cipher(algorithms.AES(key), modes.ECB())  # 使用 AES-ECB 模式
+    encryptor = cipher.encryptor()
+    padded_input = input_bytes.ljust(16, b'\0')  # 填充输入至 16 字节（AES 块大小）
+    return encryptor.update(padded_input)[:8]  # 返回前 8 字节
+
+
+# 生成一个 128 位（16 字节）的随机密钥
+def generate_key():
+    return os.urandom(16)  # 生成 16 字节的随机密钥
+
+
+# DMPF 密钥共享生成
+def dmpf_gen(alpha_list, beta_list, size):
+    keys = [generate_key() for _ in range(len(alpha_list))]  # 为每个触发点生成 16 字节密钥
+    h1_key = generate_key()  # Cuckoo 哈希第一个哈希函数的固定密钥
+    h2_key = generate_key()  # Cuckoo 哈希第二个哈希函数的固定密钥
+    shares = []  # 用于存储每个触发点的共享
+
+    # 为每个触发点生成共享
+    for i, alpha in enumerate(alpha_list):
+        share0, share1 = generate_shares(keys[i], alpha, beta_list[i])
+        shares.append((share0, share1))
+
+    cuckoo_table = cuckoo_hash(alpha_list, beta_list, size, h1_key, h2_key)
+    return shares, cuckoo_table, h1_key, h2_key
+
+
+# Cuckoo 哈希：使用两个固定 PRF 生成索引并处理冲突
+def cuckoo_hash(alpha_list, beta_list, size, h1_key, h2_key, max_retries=100):
+    cuckoo_table = [None] * size
+    for alpha, beta in zip(alpha_list, beta_list):
+        element = (alpha, beta)
+        current_element = element
+        inserted = False
+        for _ in range(max_retries):
+            # 计算两个候选位置
+            pos1 = int.from_bytes(prf(h1_key, current_element[0].encode()), 'big') % size
+            pos2 = int.from_bytes(prf(h2_key, current_element[0].encode()), 'big') % size
+
+            # 尝试插入到两个候选位置中的空位
+            if cuckoo_table[pos1] is None:
+                cuckoo_table[pos1] = current_element
+                inserted = True
+                break
+            if cuckoo_table[pos2] is None:
+                cuckoo_table[pos2] = current_element
+                inserted = True
+                break
+
+            # 随机选择一个位置进行驱逐
+            evict_pos = random.choice([pos1, pos2])
+            evicted_element = cuckoo_table[evict_pos]
+            cuckoo_table[evict_pos] = current_element
+            current_element = evicted_element  # 处理被驱逐的元素
+
+        if not inserted:
+            raise RuntimeError("Cuckoo hashing failed for element: {}".format(current_element))
+    return cuckoo_table
+
+
+# 生成触发点的共享
+def generate_shares(key, alpha, beta):
+    share0 = prf(key, alpha.encode())  # 使用触发点生成共享0
+    share1 = prf(key, beta.to_bytes(8, 'big'))  # 使用返回值生成共享1
+    return share0, share1
+
+
+# DMPF 评估：查询触发点对应的返回值
+def dmpf_eval(cuckoo_table, h1_key, h2_key, alpha):
+    pos1 = int.from_bytes(prf(h1_key, alpha.encode()), 'big') % len(cuckoo_table)
+    pos2 = int.from_bytes(prf(h2_key, alpha.encode()), 'big') % len(cuckoo_table)
+
+    # 检查两个候选位置
+    if cuckoo_table[pos1] is not None and cuckoo_table[pos1][0] == alpha:
+        return cuckoo_table[pos1][1]
+    elif cuckoo_table[pos2] is not None and cuckoo_table[pos2][0] == alpha:
+        return cuckoo_table[pos2][1]
+    else:
+        return 0  # 未找到返回0
+
+
+# 示例输入
+alpha_list = ["alpha1", "alpha2", "alpha3"]  # 触发点列表
+beta_list = [10, 20, 30]  # 对应返回值列表
+size = 10  # 哈希表大小
+
+# 生成 DMPF 共享
+shares, cuckoo_table, h1_key, h2_key = dmpf_gen(alpha_list, beta_list, size)
+
+# 打印哈希表
+print("Cuckoo Table:")
+for idx, item in enumerate(cuckoo_table):
+    print(f"{idx}: {item}")
+
+# 评估 DMPF：查询触发点对应的返回值
+for alpha in alpha_list:
+    result = dmpf_eval(cuckoo_table, h1_key, h2_key, alpha)
+    print(f"Result at {alpha}: {result}")
